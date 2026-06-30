@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
-# Seed Neo4j with the W9B recipe fixture vendored under api/seed.cypher.
-# Idempotent — the cypher file uses MERGE + IF NOT EXISTS, so re-running
-# does not duplicate nodes or constraints.
-# Run from the repo root: bash seed_neo4j.sh
 set -euo pipefail
 
-NEO4J_PASSWORD="${NEO4J_PASSWORD:-devpassword}"
-NEO4J_USER="${NEO4J_USER:-neo4j}"
-SEED_FILE="api/seed.cypher"
+echo "Waiting for Neo4j container to be running ..."
 
-if [ ! -f "$SEED_FILE" ]; then
-  echo "ERROR: $SEED_FILE not found. Run from the repo root." >&2
-  exit 1
-fi
+for i in {1..60}; do
+  if docker compose ps -q neo4j >/dev/null 2>&1 && [ -n "$(docker compose ps -q neo4j)" ]; then
+    status="$(docker inspect -f '{{.State.Status}}' "$(docker compose ps -q neo4j)")"
+    echo "neo4j status=$status"
 
-echo "Seeding Neo4j (loading $SEED_FILE via cypher-shell inside the neo4j container) ..."
+    if [ "$status" = "running" ]; then
+      break
+    fi
+  fi
+
+  sleep 2
+done
+
+echo "Seeding Neo4j (loading api/seed.cypher via cypher-shell inside the neo4j container) ..."
+
 docker compose exec -T neo4j cypher-shell \
-  -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" < "$SEED_FILE"
+  -u neo4j \
+  -p "${NEO4J_PASSWORD:-devpassword}" \
+  -f /var/lib/neo4j/import/seed.cypher
+
 echo "Done."

@@ -29,7 +29,13 @@ SCHEMA = {
 
 def main() -> None:
     client = weaviate.Client(URL)
-    if not client.schema.contains({"class": "Chunk"}):
+    existing_schema = client.schema.get()
+    existing_classes = {
+    item["class"]
+    for item in existing_schema.get("classes", [])
+}
+
+    if "Chunk" not in existing_classes:
         client.schema.create_class(SCHEMA)
 
     with open(os.path.join(os.path.dirname(__file__), "seed_chunks.json")) as f:

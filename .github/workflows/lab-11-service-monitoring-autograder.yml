@@ -1,3 +1,6 @@
+
+
+
 name: lab-11-service-monitoring Autograder
 
 on:
@@ -74,24 +77,31 @@ jobs:
 
       - name: Seed Neo4j
         env:
-          NEO4J_URI: bolt://localhost:7687
-          NEO4J_USER: neo4j
+          
           NEO4J_PASSWORD: devpassword
         run: |
-          if [ -f seed_neo4j.sh ]; then
-            bash seed_neo4j.sh
+          if [ -f api/seed.cypher ]; then
+            docker cp api/seed.cypher ${{ job.services.neo4j.id }}:/tmp/seed.cypher
+            docker exec ${{ job.services.neo4j.id }} cypher-shell \
+              -a bolt://localhost:7687 \
+              -u neo4j \
+              -p "$NEO4J_PASSWORD" \
+              -f /tmp/seed.cypher
           else
-            echo "seed_neo4j.sh not present — skipping"
+            echo "api/seed.cypher not present — skipping"
           fi
 
       - name: Seed Weaviate
         env:
           WEAVIATE_URL: http://localhost:8080
+          HF_HUB_DISABLE_XET: "1"
+          HF_HUB_DOWNLOAD_TIMEOUT: "600"
+          HF_HUB_ETAG_TIMEOUT: "60"
         run: |
-          if [ -f seed_weaviate.sh ]; then
-            bash seed_weaviate.sh
+          if [ -f api/seed_weaviate.py ]; then
+            python api/seed_weaviate.py
           else
-            echo "seed_weaviate.sh not present — skipping"
+            echo "api/seed_weaviate.py not present — skipping"
           fi
 
       - name: Start learner API
@@ -101,6 +111,9 @@ jobs:
           NEO4J_PASSWORD: devpassword
           WEAVIATE_URL: http://localhost:8080
           WEB_ORIGIN: http://localhost:3000
+          HF_HUB_DISABLE_XET: "1"
+          HF_HUB_DOWNLOAD_TIMEOUT: "600"
+          HF_HUB_ETAG_TIMEOUT: "60"
         run: |
           nohup python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 \
             > api.log 2>&1 &
