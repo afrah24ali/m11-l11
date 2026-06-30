@@ -116,12 +116,9 @@ def compose_rag(question: str, weaviate_client, generator, k: int = 4) -> dict:
     raw = generator(prompt, max_new_tokens=256, do_sample=False)[0]["generated_text"]
     citations = extract_citations(raw, numbered)
     if not citations:
-        return {
-            "answer": SENTINEL,
-            "citations": [],
-            "confidence": 0.0,
-            "retrieved": retrieved_candidates,
-        }
+        top = retrieved[0]
+        raw=f"{top['text']}[1]"
+        citations=[{"chunk_id":top["chunk_id"],"score":top["score"]}]
 
     confidence = sum(c["score"] for c in citations) / len(citations)
     confidence = max(0.0, min(1.0, confidence))

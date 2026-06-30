@@ -36,44 +36,96 @@ Methodology pointers:
   - Reading sections 6-10 cover middleware, metric types, label cardinality.
   - See Common Pitfalls #1-#4 in the lab guide.
 """
+from __future__ import annotations
 
-# TODO: import Counter, Histogram, Gauge from prometheus_client.
+import contextvars
+import json
+import logging
+import time
+import uuid
 
-# TODO: declare the three metric families at module scope.
-#
-#   requests_total           — Counter, labels (path, status)
-#   request_latency_seconds  — Histogram, label (path); use the default
-#                              Prometheus latency buckets.
-#   inflight_requests        — Gauge, no labels.
-#
-# Do not over-label — see the cardinality discussion in the M11 reading.
-
-
-# TODO: implement RequestIdMiddleware (ASGI middleware class).
-#
-#   - __init__(self, app): store app.
-#   - __call__(self, scope, receive, send): generate a request id, store it
-#     somewhere the logging layer can read (a ContextVar is the standard
-#     pattern), and arrange for the outbound response to carry an
-#     `X-Request-ID` header.
-#
-#   The autograder asserts the response header is present and at least 8
-#   characters long.
+from prometheus_client import Counter, Gauge, Histogram
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 
-# TODO: implement StructuredLoggingMiddleware (ASGI middleware class).
-#
-#   - On response, emit one JSON line containing the keys:
-#       request_id, path, status, latency_ms
-#     plus any other keys you find useful. The autograder asserts the four
-#     keys above are present and parseable as JSON.
+request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id",
+    default="",
+)
+
+requests_total = Counter(
+    "requests_total",
+    "Total HTTP requests by path and status.",
+    ["path", "status"],
+)
+
+request_latency_seconds = Histogram(
+    "request_latency_seconds",
+    "HTTP request latency in seconds by path.",
+    ["path"],
+)
+
+inflight_requests = Gauge(
+    "inflight_requests",
+    "Number of HTTP requests currently in flight.",
+)
 
 
-# TODO: implement MetricsMiddleware (ASGI middleware class).
-#
-#   - On request: increment inflight_requests.
-#   - Around the route handler: time the request.
-#   - On response: increment requests_total with the (path, status) label
-#     pair, observe the latency histogram, decrement inflight_requests.
-#
-#   Do not include high-cardinality labels (no user id, no query string).
+def _path_label(request: Request) -> str:
+    route = request.scope.get("route")
+    if route is not None and getattr(route, "path", None):
+        return route.path
+    return request.url.path
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request_id = uuid.uuid4().hex
+        token = request_id_var.set(request_id)
+
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            request_id_var.reset(token)
+
+
+class StructuredLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        latency_ms = (time.perf_counter() - start) * 1000
+
+        log_record = {
+            "ts": time.time(),
+            "level": "INFO",
+            "request_id": request_id_var.get(),
+            "path": _path_label(request),
+            "status": response.status_code,
+            "latency_ms": round(latency_ms, 3),
+        }
+
+        logging.getLogger("m11.api").info(json.dumps(log_record))
+        return response
+
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        inflight_requests.inc()
+        start = time.perf_counter()
+
+        try:
+            response = await call_next(request)
+        finally:
+            inflight_requests.dec()
+
+        elapsed = time.perf_counter() - start
+        path = _path_label(request)
+        status = str(response.status_code)
+
+        requests_total.labels(path=path, status=status).inc()
+        request_latency_seconds.labels(path=path).observe(elapsed)
+
+        return response
